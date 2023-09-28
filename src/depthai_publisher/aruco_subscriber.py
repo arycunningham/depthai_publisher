@@ -17,7 +17,7 @@ class ArucoDetector():
     # aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_ARUCO_ORIGINAL) 
     aruco_params = cv2.aruco.DetectorParameters_create()
 
-    frame_sub_topic = '/oak_d_RGB/image_raw/compressed'
+    frame_sub_topic = '/ov7251/image_raw/compressed'
     # camera_matrix
     # mtx = np.array([[623.680552, 0, (256/2)], [0, 623.680552, (192/2)], [0, 0, 1]], dtype=np.float)
     mtx = np.array([[256.0, 0.0, 128.0],[0.0, 192.0, 96.0],[0.0, 0.0, 1.0]], dtype=np.float)
@@ -25,16 +25,21 @@ class ArucoDetector():
     # distortion_coefficients
     dist = np.array([[0, 0, 0, 0]], dtype=np.float)
 
-    # Class Variables fro aruco frame
+    # Class Variables for aruco frame
     tfbr = None
     pub_found = None
 
     camera_name = "camera"
     aruco_name = "aruco_"
         
-    def __init__(self):
+    def __init__(self, args):
+
+        self.camera_topic_name = str(args["cam_topic"])
+        print(f'Aruco detector for cam: {self.camera_topic_name}')
+        self.frame_sub_topic = f'/{self.camera_topic_name}/ov7251/image_raw/compressed'
+
         self.aruco_pub = rospy.Publisher(
-            '/processed_aruco/image/compressed', CompressedImage, queue_size=10)
+            f'/{self.camera_topic_name}/processed_aruco/image/compressed', CompressedImage, queue_size=10)
 
         self.br = CvBridge()
 
@@ -157,11 +162,10 @@ class ArucoDetector():
         self.tfbr.sendTransform(t)
         self.pub_found.publish(time_found)
 
-
-def main():
+def main(args):
     rospy.init_node('EGB349_vision', anonymous=True)
     rospy.loginfo("Processing images...")
-
-    aruco_detect = ArucoDetector()
+    print(args)
+    aruco_detect = ArucoDetector(args)
 
     rospy.spin()
