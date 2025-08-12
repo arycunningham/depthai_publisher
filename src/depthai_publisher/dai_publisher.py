@@ -12,8 +12,8 @@ import numpy as np
 
 
 class DepthaiCamera():
-    res = [416, 416]
-    fps = 20.0
+    res = [600 , 600]
+    fps = 30.0
 
     pub_topic = '/depthai_node/image/compressed'
     pub_topic_raw = '/depthai_node/image/raw'
@@ -23,7 +23,7 @@ class DepthaiCamera():
         self.pipeline = dai.Pipeline()
 
         # Pulbish ros image data
-        self.pub_image = rospy.Publisher(self.pub_topic, CompressedImage, queue_size=10)
+        self.pub_image = rospy.Publisher(self.pub_topic, CompressedImage, queue_size=20)
         self.pub_image_raw = rospy.Publisher(self.pub_topic_raw, Image, queue_size=10)
         # Create a publisher for the CameraInfo topic
         self.pub_cam_inf = rospy.Publisher(self.pub_topic_cam_inf, CameraInfo, queue_size=10)

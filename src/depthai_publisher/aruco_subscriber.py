@@ -3,22 +3,24 @@
 import cv2
 
 import rospy
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, Image
 from cv_bridge import CvBridge, CvBridgeError
 
 import numpy as np
 
 
 class ArucoDetector():
-    aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_100)
+    aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_5X5_100)
     aruco_params = cv2.aruco.DetectorParameters_create()
 
     frame_sub_topic = '/depthai_node/image/compressed'
+    raw_sub_topic = '/depthai_node/image/raw'
+    
 
     def __init__(self):
         self.aruco_pub = rospy.Publisher(
-            '/processed_aruco/image/compressed', CompressedImage, queue_size=10)
-
+            '/processed_aruco/image/compressed', CompressedImage, queue_size=20)
+        self.aruco_pub_raw = rospy.Publisher('processed_aruco/image/raw', Image, queue_size=10)
         self.br = CvBridge()
 
         if not rospy.is_shutdown():
@@ -61,7 +63,7 @@ class ArucoDetector():
                 rospy.loginfo("Aruco detected, ID: {}".format(marker_ID))
 
                 cv2.putText(frame, str(
-                    marker_ID), (top_left[0], top_right[1] - 15), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 255, 0), 2)
+                    marker_ID), (top_left[0], top_right[1] - 15), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 140, 0), 2)
 
         return frame
 
@@ -72,6 +74,8 @@ class ArucoDetector():
         msg_out.data = np.array(cv2.imencode('.jpg', frame)[1]).tostring()
 
         self.aruco_pub.publish(msg_out)
+        msg_img_raw = self.br.cv2_to_imgmsg(frame, encoding="bgr8")
+        self.aruco_pub_raw.publish(msg_img_raw)
 
 
 def main():
