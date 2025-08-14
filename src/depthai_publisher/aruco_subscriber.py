@@ -10,7 +10,7 @@ import numpy as np
 
 
 class ArucoDetector():
-    aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_5X5_100)
+    aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_5X5_1000)
     aruco_params = cv2.aruco.DetectorParameters_create()
 
     frame_sub_topic = '/depthai_node/image/compressed'
@@ -19,8 +19,8 @@ class ArucoDetector():
 
     def __init__(self):
         self.aruco_pub = rospy.Publisher(
-            '/processed_aruco/image/compressed', CompressedImage, queue_size=20)
-        self.aruco_pub_raw = rospy.Publisher('processed_aruco/image/raw', Image, queue_size=10)
+            '/processed_aruco/image/compressed', CompressedImage, queue_size=30)
+        self.aruco_pub_raw = rospy.Publisher('processed_aruco/image/raw', Image, queue_size=30)
         self.br = CvBridge()
 
         if not rospy.is_shutdown():
