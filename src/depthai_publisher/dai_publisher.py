@@ -12,7 +12,7 @@ import numpy as np
 
 
 class DepthaiCamera():
-    res = [680, 680]
+    res = [680 , 680]
     fps = 30.0
 
     pub_topic = '/depthai_node/image/compressed'
