@@ -1,1 +1,2 @@
 src/depthai_publisher/__pycache__/*.pyc
+src/depthai_publisher/__pycache__/dai_publisher.cpython-38.pyc
