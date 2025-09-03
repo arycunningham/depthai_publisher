@@ -17,7 +17,7 @@ class ArucoDetector():
 
     def __init__(self):
         self.aruco_pub = rospy.Publisher(
-            '/processed_aruco/image/compressed', CompressedImage, queue_size=10)
+            '/processed_aruco/image/compressed', CompressedImage, queue_size=30)
 
         self.br = CvBridge()
 
