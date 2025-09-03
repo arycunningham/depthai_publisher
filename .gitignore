@@ -10,6 +10,8 @@
 .AppleDouble
 .LSOverride
 
-__pycache__/
+src/depthai_publisher/__pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.cpython-38.pyc
