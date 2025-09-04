@@ -181,7 +181,7 @@ class DepthaiCamera():
                         #print(detection)
                         print("{},{},{},{},{},{}".format(labels[detection.label],detection.confidence,detection.xmin, detection.ymin, detection.xmax, detection.ymax))
                         found_classes.append(detection.label)
-                        print(dai.ImgDetection.getData(detection))
+                        #print(dai.ImgDetection.getData(detection))
                     found_classes = np.unique(found_classes)
                     #print(found_classes)
                     overlay = self.show_yolo(frame, detections)
