@@ -30,9 +30,9 @@ syncNN = True
 # model path
 modelsPath = "/home/cdrone/catkin_ws/src/depthai_publisher/src/depthai_publisher/models"
 # modelName = 'exp31Yolov5_ov21.4_6sh'
-modelName = 'v1_1_2'
+modelName = 'v2'
 # confJson = 'exp31Yolov5.json'
-confJson = 'v1_1_2.json'
+confJson = 'v2.json'
 
 ################################  Yolo Config File
 # parse config
@@ -51,7 +51,8 @@ coordinates = metadata.get("coordinates", {})
 anchors = metadata.get("anchors", {})
 anchorMasks = metadata.get("anchor_masks", {})
 iouThreshold = metadata.get("iou_threshold", {})
-confidenceThreshold = metadata.get("confidence_threshold", {})
+#confidenceThreshold = metadata.get("confidence_threshold", {})
+confidenceThreshold = 0.75
 # Parse labels
 nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", {})
@@ -77,7 +78,7 @@ class DepthaiCamera():
         self.pub_image_raw = rospy.Publisher(self.pub_topic_raw, Image, queue_size=30)
         self.pub_image_detect = rospy.Publisher(self.pub_topic_detect, CompressedImage, queue_size=30)
         # Create a publisher for the CameraInfo topic
-        self.pub_cam_inf = rospy.Publisher(self.pub_topic_cam_inf, CameraInfo, queue_size=10)
+        self.pub_cam_inf = rospy.Publisher(self.pub_topic_cam_inf, CameraInfo, queue_size=30)
         # Create a timer for the callback
         self.timer = rospy.Timer(rospy.Duration(1.0 / 10), self.publish_camera_info, oneshot=False)
 
