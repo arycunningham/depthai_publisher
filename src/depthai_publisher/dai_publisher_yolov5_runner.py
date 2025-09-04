@@ -30,9 +30,9 @@ syncNN = True
 # model path
 modelsPath = "/home/cdrone/catkin_ws/src/depthai_publisher/src/depthai_publisher/models"
 # modelName = 'exp31Yolov5_ov21.4_6sh'
-modelName = 'v2_2'
+modelName = 'v1'
 # confJson = 'exp31Yolov5.json'
-confJson = 'v2_2.json'
+confJson = 'v1.json'
 
 ################################  Yolo Config File
 # parse config
@@ -57,7 +57,7 @@ nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", {})
 
 class DepthaiCamera():
-    res = [680, 680]
+    # res = [680, 680]
     fps = 30.0
 
     pub_topic = '/depthai_node/image/compressed'
