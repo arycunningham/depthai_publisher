@@ -30,9 +30,9 @@ syncNN = True
 # model path
 modelsPath = "/home/cdrone/catkin_ws/src/depthai_publisher/src/depthai_publisher/models"
 # modelName = 'exp31Yolov5_ov21.4_6sh'
-modelName = 'data1'
+modelName = 'v1_1'
 # confJson = 'exp31Yolov5.json'
-confJson = 'best.json'
+confJson = 'v1_1.json'
 
 ################################  Yolo Config File
 # parse config
