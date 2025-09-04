@@ -1,0 +1,68 @@
+Model:
+	v1.1 :
+		 -- Dataset used: data1
+    	    Dataset Size: 298 Images (292 Train, 6 Valid)
+		    Image Size: 672x672 px
+		    Classes: ['smoke', 'fire', 'marker']
+		    Epochs: 16
+		    Batch Size: 16
+		    IoU Threshold: 0.65
+		    Use FP16 half-precision inference: True
+
+	v1.2 :
+		 -- Dataset used: data1 + frames from rosbag 26th August (wk 6)
+		 	Dataset Size: 5085 Images (292 Train, 6 Valid, 4787 Test)
+		 	Image Size: 672x672 px
+		 	Epochs: 650, '--patience 100' stopped training at 154 epochs
+		 	Batch Size: 16
+		 	IoU Threshold: 0.65
+		 	Use FP16 half-precision inference: True
+
+	v1.3 :
+		 -- Dataset used: 26Aug_Frames1 (Autolabelled)
+		 	Dataset Size: 2233 Images (2227 Train, 6 Valid)
+		 	Image Size: 672x672 px
+		 	Epochs: 650, '--patience' is set to 100'
+		 	Batch Size: 16
+
+	v1.4 :
+		 -- Dataset used: 26Aug_Frames1 (Augmented)
+		 	Dataset Size: 11141 (11135 Train, 6 Valid)
+		 	Image Size: 672x672 px
+		 	Epochs: 650, '--patience' is set to 100'
+		 	Batch Size: 16
+
+	v2 :
+		 -- Dataset used: dataset_v2 (Instant Roboflow Model)
+		 	Dataset Size: 426 (420 Train, 6 Valid)
+		 	Image Size: 416x416
+		 	Epochs: 16
+		 	Batch Size: 16
+
+	v2.1 :
+		 -- Dataset used: dataset_v2 (Instant Roboflow Model)
+		 	Dataset Size: 426 (420 Train, 6 Valid)
+		 	Image Size: 640x640
+		 	Epochs: 16
+		 	Batch Size: 16
+
+	v2.2 :
+		 -- Dataset used: dataset_v2 (Augmented: Resized to 416x416)
+		 	Dataset Size: 426 (420 Train, 6 Valid)
+		 	Image Size: 416x416
+		 	Epochs: 16
+		 	Batch Size: 16
+
+	v2.3 :
+		 -- Dataset used: dataset_v2 (Augmented: Resized to 416x416)
+		 	Dataset Size: 426 (420 Train, 6 Valid)
+		 	Image Size: 416x416
+		 	Epochs: 650, '--patience 100', stopped at 153 epochs
+		 	Batch Size: 16
+
+	v2.3a :
+		 -- Dataset used: dataset_v2 (Augmented: Resized to 416x416)
+		 	Dataset Size: 426 (420 Train, 6 Valid)
+		 	Image Size: 640x640
+		 	Epochs: 650, '--patience 100', stopped at 153 epochs
+		 	Batch Size: 16
