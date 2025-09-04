@@ -51,14 +51,13 @@ coordinates = metadata.get("coordinates", {})
 anchors = metadata.get("anchors", {})
 anchorMasks = metadata.get("anchor_masks", {})
 iouThreshold = metadata.get("iou_threshold", {})
-#confidenceThreshold = metadata.get("confidence_threshold", {})
-confidenceThreshold = 0.75
+confidenceThreshold = metadata.get("confidence_threshold", {})
 # Parse labels
 nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", {})
 
 class DepthaiCamera():
-    res = [680, 680]
+    res = [640, 640]
     fps = 30.0
 
     pub_topic = '/depthai_node/image/compressed'
