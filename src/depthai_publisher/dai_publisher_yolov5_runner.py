@@ -30,9 +30,9 @@ syncNN = True
 # model path
 modelsPath = "/home/cdrone/catkin_ws/src/depthai_publisher/src/depthai_publisher/models"
 # modelName = 'exp31Yolov5_ov21.4_6sh'
-modelName = 'v1_1'
+modelName = 'v1'
 # confJson = 'exp31Yolov5.json'
-confJson = 'v1_1.json'
+confJson = 'v1.json'
 
 ################################  Yolo Config File
 # parse config
@@ -176,14 +176,14 @@ class DepthaiCamera():
                 
                 if inDet is not None:
                     detections = inDet.detections
-                    # print(detections)
+                    #print(detections)
                     for detection in detections:
-                        # print(detection)
-                        # print("{},{},{},{},{},{},{}".format(detection.label,labels[detection.label],detection.confidence,detection.xmin, detection.ymin, detection.xmax, detection.ymax))
+                        #print(detection)
+                        print("{},{},{},{},{},{}".format(labels[detection.label],detection.confidence,detection.xmin, detection.ymin, detection.xmax, detection.ymax))
                         found_classes.append(detection.label)
-                        # print(dai.ImgDetection.getData(detection))
+                        #print(dai.ImgDetection.getData(detection))
                     found_classes = np.unique(found_classes)
-                    # print(found_classes)
+                    #print(found_classes)
                     overlay = self.show_yolo(frame, detections)
                 else:
                     print("Detection empty, trying again...")
