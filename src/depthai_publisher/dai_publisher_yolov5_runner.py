@@ -57,7 +57,7 @@ nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", {})
 
 class DepthaiCamera():
-    res = [640, 640]
+    res = [680, 680]
     fps = 30.0
 
     pub_topic = '/depthai_node/image/compressed'
