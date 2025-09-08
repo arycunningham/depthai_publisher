@@ -298,7 +298,7 @@ class DepthaiCamera():
 
         with dai.Device() as device:
             cams = device.getConnectedCameras()
-            depth_enabled = dai.CameraBoardSocket.LEFT in cams and dai.CameraBoardSocket.RIGHT in cams
+            #depth_enabled = dai.CameraBoardSocket.LEFT in cams and dai.CameraBoardSocket.RIGHT in cams
             if cam_source != "rgb" and not depth_enabled:
                 raise RuntimeError("Unable to run the experiment on {} camera! Available cameras: {}".format(cam_source, cams))
             device.startPipeline(pipeline)
