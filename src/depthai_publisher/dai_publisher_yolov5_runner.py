@@ -19,6 +19,13 @@ import depthai as dai
 import rospy
 from sensor_msgs.msg import CompressedImage, Image, CameraInfo
 from cv_bridge import CvBridge, CvBridgeError
+from std_msgs.msg import Float32MultiArray, String, Bool
+# Added imports for target detection and pose transformation
+from geometry_msgs.msg import PoseStamped, Point, Quaternion
+from mavros_msgs.msg import State
+import tf2_ros
+import tf_conversions
+import math
 
 ############################### ############################### Parameters ###############################
 # Global variables to deal with pipeline creation
@@ -64,6 +71,11 @@ class DepthaiCamera():
     pub_topic_raw = '/depthai_node/image/raw'
     pub_topic_detect = '/depthai_node/detection/compressed'
     pub_topic_cam_inf = '/depthai_node/camera/camera_info'
+    
+    # Target detection topics for spar/breadcrumb integration
+    pub_topic_target_confirmation = '/target_detection/confirmation'
+    pub_topic_target_type = '/target_detection/type'
+    pub_topic_target_roi = '/target_detection/roi'
 
     def __init__(self):
         self.pipeline = dai.Pipeline()
@@ -72,44 +84,188 @@ class DepthaiCamera():
         if "input_size" in nnConfig:
             self.nn_shape_w, self.nn_shape_h = tuple(map(int, nnConfig.get("input_size").split('x')))
 
-        # Pulbish ros image data
+        # Publish ros image data
         self.pub_image = rospy.Publisher(self.pub_topic, CompressedImage, queue_size=30)
         self.pub_image_raw = rospy.Publisher(self.pub_topic_raw, Image, queue_size=30)
         self.pub_image_detect = rospy.Publisher(self.pub_topic_detect, CompressedImage, queue_size=30)
         # Create a publisher for the CameraInfo topic
         self.pub_cam_inf = rospy.Publisher(self.pub_topic_cam_inf, CameraInfo, queue_size=30)
+        
+        # Publishers for target detection (compatible with spar/breadcrumb system)
+        self.pub_target_confirmation = rospy.Publisher(self.pub_topic_target_confirmation, Bool, queue_size=2)
+        self.pub_target_type = rospy.Publisher(self.pub_topic_target_type, String, queue_size=2)
+        self.pub_target_roi = rospy.Publisher(self.pub_topic_target_roi, PoseStamped, queue_size=2)
+        
+        # Subscribe to UAV pose from MAVROS
+        self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
+        
+        # UAV pose storage
+        self.current_uav_pose = None
+        
+        # Camera parameters for pose transformation
+        # Camera offset from UAV center (matching tf2_broadcaster_frames)
+        self.camera_offset_x = 0.1   # Forward
+        self.camera_offset_y = 0.0   # Right
+        self.camera_offset_z = -0.15 # Down
+        
+        # Camera intrinsics
+        self.fx, self.fy = 615.381, 615.381
+        self.cx, self.cy = 320.0, 240.0
+        
         # Create a timer for the callback
         self.timer = rospy.Timer(rospy.Duration(1.0 / 10), self.publish_camera_info, oneshot=False)
 
         rospy.loginfo("Publishing images to rostopic: {}".format(self.pub_topic))
+        rospy.loginfo("Publishing target detection to: confirmation={}, type={}, roi={}".format(
+            self.pub_topic_target_confirmation, self.pub_topic_target_type, self.pub_topic_target_roi))
 
         self.br = CvBridge()
 
         rospy.on_shutdown(lambda: self.shutdown())
 
-    def publish_camera_info(self, timer=None):
-        # Create a publisher for the CameraInfo topic
+    def callback_uav_pose(self, msg):
+        """Store current UAV pose for target localization"""
+        self.current_uav_pose = msg
 
+    def publish_camera_info(self, timer=None):
         # Create a CameraInfo message
         camera_info_msg = CameraInfo()
         camera_info_msg.header.frame_id = "camera_frame"
-        camera_info_msg.height = self.nn_shape_h # Set the height of the camera image
-        camera_info_msg.width = self.nn_shape_w  # Set the width of the camera image
+        camera_info_msg.height = self.nn_shape_h
+        camera_info_msg.width = self.nn_shape_w
 
         # Set the camera intrinsic matrix (fx, fy, cx, cy)
-        camera_info_msg.K = [615.381, 0.0, 320.0, 0.0, 615.381, 240.0, 0.0, 0.0, 1.0]
+        camera_info_msg.K = [self.fx, 0.0, self.cx, 0.0, self.fy, self.cy, 0.0, 0.0, 1.0]
         # Set the distortion parameters (k1, k2, p1, p2, k3)
         camera_info_msg.D = [-0.10818, 0.12793, 0.00000, 0.00000, -0.04204]
         # Set the rectification matrix (identity matrix)
         camera_info_msg.R = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         # Set the projection matrix (P)
-        camera_info_msg.P = [615.381, 0.0, 320.0, 0.0, 0.0, 615.381, 240.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        camera_info_msg.P = [self.fx, 0.0, self.cx, 0.0, 0.0, self.fy, self.cy, 0.0, 0.0, 0.0, 1.0, 0.0]
         # Set the distortion model
         camera_info_msg.distortion_model = "plumb_bob"
         # Set the timestamp
         camera_info_msg.header.stamp = rospy.Time.now()
 
-        self.pub_cam_inf.publish(camera_info_msg)  # Publish the camera info message
+        self.pub_cam_inf.publish(camera_info_msg)
+
+    def pixel_to_world_coordinates(self, pixel_x, pixel_y, depth_estimate):
+        """
+        Convert pixel coordinates to world coordinates using UAV pose
+        Returns world coordinates (x, y, z) or None if UAV pose unavailable
+        """
+        if self.current_uav_pose is None:
+            rospy.logwarn("UAV pose not available for target localization")
+            return None
+            
+        # Convert pixel to normalized camera coordinates
+        x_norm = (pixel_x - self.cx) / self.fx
+        y_norm = (pixel_y - self.cy) / self.fy
+        
+        # Camera frame coordinates (camera pointing down)
+        # Assuming camera is pointing downward (-Z axis)
+        x_cam = x_norm * depth_estimate
+        y_cam = y_norm * depth_estimate
+        z_cam = -depth_estimate  # Negative because camera points down
+        
+        # UAV position and orientation
+        uav_pos = self.current_uav_pose.pose.position
+        uav_orient = self.current_uav_pose.pose.orientation
+        
+        # Convert UAV quaternion to rotation matrix
+        # For simplicity, assuming UAV is level (roll=pitch=0, only yaw matters)
+        # In a full implementation, you'd use the full rotation matrix
+        
+        # Extract yaw from quaternion (simplified)
+        yaw = math.atan2(2.0 * (uav_orient.w * uav_orient.z + uav_orient.x * uav_orient.y),
+                        1.0 - 2.0 * (uav_orient.y**2 + uav_orient.z**2))
+        
+        # Apply UAV rotation and camera offset to get world coordinates
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        
+        # Camera position in world frame
+        camera_world_x = uav_pos.x + cos_yaw * self.camera_offset_x - sin_yaw * self.camera_offset_y
+        camera_world_y = uav_pos.y + sin_yaw * self.camera_offset_x + cos_yaw * self.camera_offset_y
+        camera_world_z = uav_pos.z + self.camera_offset_z
+        
+        # Target position in world frame
+        # Rotate camera coordinates by UAV yaw
+        target_x_local = cos_yaw * x_cam - sin_yaw * y_cam
+        target_y_local = sin_yaw * x_cam + cos_yaw * y_cam
+        
+        world_x = camera_world_x + target_x_local
+        world_y = camera_world_y + target_y_local
+        world_z = camera_world_z + z_cam
+        
+        return world_x, world_y, world_z
+
+    def publish_target_detection(self, detections, timestamp):
+        """
+        Publish target detection data compatible with spar/breadcrumb system
+        """
+        if len(detections) == 0:
+            # Publish no target found
+            confirmation_msg = Bool()
+            confirmation_msg.data = False
+            self.pub_target_confirmation.publish(confirmation_msg)
+            return
+            
+        # For now, take the highest confidence detection
+        best_detection = max(detections, key=lambda d: d.confidence)
+        
+        # Calculate detection center in pixels
+        center_x = (best_detection.xmin + best_detection.xmax) / 2.0 * self.nn_shape_w
+        center_y = (best_detection.ymin + best_detection.ymax) / 2.0 * self.nn_shape_h
+        
+        # Estimate depth based on bounding box size (simple heuristic)
+        bbox_width = (best_detection.xmax - best_detection.xmin) * self.nn_shape_w
+        bbox_height = (best_detection.ymax - best_detection.ymin) * self.nn_shape_h
+        bbox_area = bbox_width * bbox_height
+        max_area = self.nn_shape_w * self.nn_shape_h
+        
+        # Depth estimation: larger objects are closer
+        # This is a simple heuristic - ideally use stereo depth or other methods
+        depth_estimate = max(0.5, 5.0 * (1.0 - bbox_area / max_area))
+        
+        # Convert to world coordinates
+        world_coords = self.pixel_to_world_coordinates(center_x, center_y, depth_estimate)
+        
+        if world_coords is None:
+            rospy.logwarn("Cannot localize target - UAV pose unavailable")
+            return
+            
+        world_x, world_y, world_z = world_coords
+        
+        # Publish target confirmation
+        confirmation_msg = Bool()
+        confirmation_msg.data = True
+        self.pub_target_confirmation.publish(confirmation_msg)
+        
+        # Publish target type
+        type_msg = String()
+        type_msg.data = labels[best_detection.label]
+        self.pub_target_type.publish(type_msg)
+        
+        # Publish target ROI (compatible with spar ROI subscriber)
+        roi_msg = PoseStamped()
+        roi_msg.header.stamp = timestamp
+        roi_msg.header.frame_id = "map"  # World coordinate frame
+        
+        roi_msg.pose.position.x = world_x
+        roi_msg.pose.position.y = world_y
+        roi_msg.pose.position.z = world_z
+        
+        # Identity orientation
+        roi_msg.pose.orientation.w = 1.0
+        roi_msg.pose.orientation.x = 0.0
+        roi_msg.pose.orientation.y = 0.0
+        roi_msg.pose.orientation.z = 0.0
+        
+        self.pub_target_roi.publish(roi_msg)
+        
+        rospy.loginfo("Target detected: {} at world coords [{:.2f}, {:.2f}, {:.2f}] confidence: {:.2f}".format(
+            labels[best_detection.label], world_x, world_y, world_z, best_detection.confidence))
 
     def rgb_camera(self):
         cam_rgb = self.pipeline.createColorCamera()
@@ -128,7 +284,6 @@ class DepthaiCamera():
         cam_rgb.preview.link(xout_rgb.input)
 
     def run(self):
-        #self.rgb_camera()
         ############################### Run Model ###############################
         # Pipeline defined, now the device is assigned and pipeline is started
         pipeline = None
@@ -158,7 +313,7 @@ class DepthaiCamera():
             counter = 0
             fps = 0
             
-            olor2 = (255, 255, 255)
+            color2 = (255, 255, 255)
             layer_info_printed = False
             dims = None
 
@@ -174,25 +329,30 @@ class DepthaiCamera():
                     print("Cam Image empty, trying again...")
                     continue
                 
+                current_time = rospy.Time.now()
+                
                 if inDet is not None:
                     detections = inDet.detections
-                    #print(detections)
                     for detection in detections:
-                        #print(detection)
-                        print("{},{},{},{},{},{}".format(labels[detection.label],detection.confidence,detection.xmin, detection.ymin, detection.xmax, detection.ymax))
+                        rospy.loginfo("{},{},{},{},{},{}".format(labels[detection.label],detection.confidence,detection.xmin, detection.ymin, detection.xmax, detection.ymax))
                         found_classes.append(detection.label)
-                        #print(dai.ImgDetection.getData(detection))
                     found_classes = np.unique(found_classes)
-                    #print(found_classes)
                     overlay = self.show_yolo(frame, detections)
+                    
+                    # Publish target detection data for spar/breadcrumb integration
+                    self.publish_target_detection(detections, current_time)
+                        
                 else:
                     print("Detection empty, trying again...")
+                    # Publish no target found
+                    confirmation_msg = Bool()
+                    confirmation_msg.data = False
+                    self.pub_target_confirmation.publish(confirmation_msg)
                     continue
 
                 if frame is not None:
                     cv2.putText(overlay, "NN fps: {:.2f}".format(fps), (2, overlay.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
                     cv2.putText(overlay, "Found classes {}".format(found_classes), (2, 10), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
-                    # cv2.imshow("nn_output_yolo", overlay)
                     self.publish_to_ros(frame)
                     self.publish_detect_to_ros(overlay)
                     self.publish_camera_info()
@@ -201,36 +361,26 @@ class DepthaiCamera():
                 counter+=1
                 if (time.time() - start_time) > 1 :
                     fps = counter / (time.time() - start_time)
-
                     counter = 0
                     start_time = time.time()
-
-
-            # with dai.Device(self.pipeline) as device:
-            #     video = device.getOutputQueue(name="video", maxSize=1, blocking=False)
-
-            #     while True:
-            #         frame = video.get().getCvFrame()
-
-            #         self.publish_to_ros(frame)
-            #         self.publish_camera_info()
 
     def publish_to_ros(self, frame):
         msg_out = CompressedImage()
         msg_out.header.stamp = rospy.Time.now()
         msg_out.format = "jpeg"
-        msg_out.header.frame_id = "home"
+        msg_out.header.frame_id = "camera_frame"
         msg_out.data = np.array(cv2.imencode('.jpg', frame)[1]).tostring()
         self.pub_image.publish(msg_out)
         # Publish image raw
         msg_img_raw = self.br.cv2_to_imgmsg(frame, encoding="bgr8")
+        msg_img_raw.header.frame_id = "camera_frame"
         self.pub_image_raw.publish(msg_img_raw)
 
     def publish_detect_to_ros(self, frame):
         msg_out = CompressedImage()
         msg_out.header.stamp = rospy.Time.now()
         msg_out.format = "jpeg"
-        msg_out.header.frame_id = "home"
+        msg_out.header.frame_id = "camera_frame"
         msg_out.data = np.array(cv2.imencode('.jpg', frame)[1]).tostring()
         self.pub_image_detect.publish(msg_out)
         
@@ -300,7 +450,6 @@ class DepthaiCamera():
             manip = pipeline.create(dai.node.ImageManip)
             manip.setResize(self.nn_shape_w,self.nn_shape_h)
             manip.setKeepAspectRatio(True)
-            # manip.setFrameType(dai.RawImgFrame.Type.BGR888p)
             manip.setFrameType(dai.RawImgFrame.Type.RGB888p)
             cam.out.link(manip.inputImage)
             manip.out.link(detection_nn.input)
@@ -320,10 +469,8 @@ class DepthaiCamera():
 
         return pipeline
 
-
     def shutdown(self):
         cv2.destroyAllWindows()
-
 
 #### Main code that creates a depthaiCamera class and run it.
 def main():
@@ -334,3 +481,6 @@ def main():
         dai_cam.run()
 
     dai_cam.shutdown()
+
+if __name__ == '__main__':
+    main()
