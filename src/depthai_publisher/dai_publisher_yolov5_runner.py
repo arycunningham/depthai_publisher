@@ -26,6 +26,7 @@ from mavros_msgs.msg import State
 import tf2_ros
 import tf_conversions
 import math
+from visualization_msgs.msg import Marker, MarkerArray
 
 ############################### ############################### Parameters ###############################
 # Global variables to deal with pipeline creation
@@ -63,6 +64,44 @@ confidenceThreshold = metadata.get("confidence_threshold", {})
 nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", {})
 
+class DetectedTarget:
+    """Class to store detected target information"""
+    def __init__(self, target_id, label, confidence, world_x, world_y, world_z, timestamp):
+        self.target_id = target_id
+        self.label = label
+        self.confidence = confidence
+        self.world_x = world_x
+        self.world_y = world_y
+        self.world_z = world_z
+        self.timestamp = timestamp
+        self.last_seen = timestamp
+        
+    def update_detection(self, confidence, world_x, world_y, timestamp):
+        """Update target with new detection if conditions are met"""
+        # Update if confidence increases by more than 0.2 or is greater than 0.75
+        if (confidence > self.confidence + 0.2) or (confidence > 0.75):
+            self.confidence = confidence
+            self.world_x = world_x
+            self.world_y = world_y
+            self.last_seen = timestamp
+            return True
+        # Update if position changes by more than 0.1m
+        dx = abs(world_x - self.world_x)
+        dy = abs(world_y - self.world_y)
+        if dx > 0.1 or dy > 0.1:
+            self.confidence = confidence
+            self.world_x = world_x
+            self.world_y = world_y
+            self.last_seen = timestamp
+            return True
+        return False
+    
+    def distance_to(self, other_target):
+        """Calculate 2D distance to another target"""
+        dx = self.world_x - other_target.world_x
+        dy = self.world_y - other_target.world_y
+        return math.sqrt(dx*dx + dy*dy)
+
 class DepthaiCamera():
     # res = [680, 680]
     fps = 30.0
@@ -76,6 +115,7 @@ class DepthaiCamera():
     pub_topic_target_confirmation = '/target_detection/confirmation'
     pub_topic_target_type = '/target_detection/type'
     pub_topic_target_roi = '/target_detection/roi'
+    pub_topic_target_list = '/target_detection/target_list'
 
     def __init__(self):
         self.pipeline = dai.Pipeline()
@@ -95,18 +135,27 @@ class DepthaiCamera():
         self.pub_target_confirmation = rospy.Publisher(self.pub_topic_target_confirmation, Bool, queue_size=2)
         self.pub_target_type = rospy.Publisher(self.pub_topic_target_type, String, queue_size=2)
         self.pub_target_roi = rospy.Publisher(self.pub_topic_target_roi, PoseStamped, queue_size=2)
+        self.pub_target_list = rospy.Publisher(self.pub_topic_target_list, String, queue_size=2)
         
         # Subscribe to UAV pose from MAVROS
+        # self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
+        # Subscribe to UAV Emulated pose
         self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
         
         # UAV pose storage
         self.current_uav_pose = None
         
+        # Target management
+        self.detected_targets = []  # List of DetectedTarget objects
+        self.target_id_counter = 0
+        self.min_target_distance = 1.0  # Minimum distance between targets (meters)
+        self.target_timeout = 10.0  # Time before removing unseen targets (seconds)
+        
         # Camera parameters for pose transformation
         # Camera offset from UAV center (matching tf2_broadcaster_frames)
-        self.camera_offset_x = 0.1   # Forward
+        self.camera_offset_x = 0.12   # Forward
         self.camera_offset_y = 0.0   # Right
-        self.camera_offset_z = -0.15 # Down
+        self.camera_offset_z = -0.1 # Down
         
         # Camera intrinsics
         self.fx, self.fy = 615.381, 615.381
@@ -116,8 +165,9 @@ class DepthaiCamera():
         self.timer = rospy.Timer(rospy.Duration(1.0 / 10), self.publish_camera_info, oneshot=False)
 
         rospy.loginfo("Publishing images to rostopic: {}".format(self.pub_topic))
-        rospy.loginfo("Publishing target detection to: confirmation={}, type={}, roi={}".format(
-            self.pub_topic_target_confirmation, self.pub_topic_target_type, self.pub_topic_target_roi))
+        rospy.loginfo("Publishing target detection to: confirmation={}, type={}, roi={}, list={}".format(
+            self.pub_topic_target_confirmation, self.pub_topic_target_type, 
+            self.pub_topic_target_roi, self.pub_topic_target_list))
 
         self.br = CvBridge()
 
@@ -152,7 +202,7 @@ class DepthaiCamera():
     def pixel_to_world_coordinates(self, pixel_x, pixel_y, depth_estimate):
         """
         Convert pixel coordinates to world coordinates using UAV pose
-        Returns world coordinates (x, y, z) or None if UAV pose unavailable
+        Returns world coordinates (x, y, z) or None if UAV pose unavailable or target below ground
         """
         if self.current_uav_pose is None:
             rospy.logwarn("UAV pose not available for target localization")
@@ -198,7 +248,138 @@ class DepthaiCamera():
         world_y = camera_world_y + target_y_local
         world_z = camera_world_z + z_cam
         
+        # Ensure target is not below ground level (Z >= 0)
+        if world_z < 0:
+            rospy.logwarn("Target below ground level (Z={:.2f}), adjusting to Z=0".format(world_z))
+            world_z = 0.0
+        
         return world_x, world_y, world_z
+
+    def get_grid_cell(self, world_x, world_y):
+        """
+        Get the grid cell (0.5m x 0.5m) that contains the coordinates
+        """
+        cell_x = int(world_x // 0.5)
+        cell_y = int(world_y // 0.5)
+        return (cell_x, cell_y)
+
+    def is_valid_detection(self, detection, world_x, world_y, world_z):
+        """
+        Check if a detection is valid (not at floor level and within grid constraints)
+        """
+        # Check if target is below ground level
+        if world_z < 0:
+            return False, "Below ground"
+        
+        # Check if we already have a detection in this 0.5m x 0.5m area
+        cell = self.get_grid_cell(world_x, world_y)
+        for existing_target in self.detected_targets:
+            existing_cell = self.get_grid_cell(existing_target.world_x, existing_target.world_y)
+            if existing_cell == cell:
+                # If we already have a detection in this cell, check if it's better
+                if detection.confidence > existing_target.confidence:
+                    # Update the existing detection with higher confidence
+                    existing_target.confidence = detection.confidence
+                    existing_target.world_x = world_x
+                    existing_target.world_y = world_y
+                    existing_target.last_seen = rospy.Time.now()
+                    return False, "Replaced existing in same cell"
+                else:
+                    return False, "Duplicate in same cell"
+        
+        return True, "Valid"
+
+    def update_target_list(self, new_detections, timestamp):
+        """
+        Update the list of detected targets with grid-based filtering and duplicate handling
+        """
+        current_time_sec = timestamp.to_sec()
+        
+        # Remove old targets that haven't been seen recently
+        self.detected_targets = [
+            target for target in self.detected_targets
+            if (current_time_sec - target.last_seen.to_sec()) < self.target_timeout
+        ]
+        
+        # Process each new detection
+        for detection in new_detections:
+            # Calculate detection center in pixels
+            center_x = (detection.xmin + detection.xmax) / 2.0 * self.nn_shape_w
+            center_y = (detection.ymin + detection.ymax) / 2.0 * self.nn_shape_h
+            
+            # Estimate depth based on bounding box size (simple heuristic)
+            bbox_width = (detection.xmax - detection.xmin) * self.nn_shape_w
+            bbox_height = (detection.ymax - detection.ymin) * self.nn_shape_h
+            bbox_area = bbox_width * bbox_height
+            max_area = self.nn_shape_w * self.nn_shape_h
+            
+            # Depth estimation: larger objects are closer
+            depth_estimate = max(0.5, 5.0 * (1.0 - bbox_area / max_area))
+            
+            # Convert to world coordinates
+            world_coords = self.pixel_to_world_coordinates(center_x, center_y, depth_estimate)
+            
+            if world_coords is None:
+                continue
+                
+            world_x, world_y, world_z = world_coords
+            
+            # Check if detection is valid
+            is_valid, reason = self.is_valid_detection(detection, world_x, world_y, world_z)
+            
+            if not is_valid:
+                rospy.loginfo("Detection skipped: {}".format(reason))
+                continue
+            
+            # Create new target for this detection
+            new_target = DetectedTarget(
+                self.target_id_counter, labels[detection.label], detection.confidence,
+                world_x, world_y, world_z, timestamp
+            )
+            
+            self.detected_targets.append(new_target)
+            self.target_id_counter += 1
+            rospy.loginfo("New target added: ID={} {} at [{:.2f}, {:.2f}, {:.2f}] confidence: {:.2f}".format(
+                new_target.target_id, new_target.label, world_x, world_y, world_z, detection.confidence))
+            
+            roi_msg = PoseStamped()
+            roi_msg.header.stamp = timestamp
+            roi_msg.header.frame_id = "map"  # World coordinate frame
+        
+            roi_msg.pose.position.x = world_x
+            roi_msg.pose.position.y = world_y
+            roi_msg.pose.position.z = world_z
+        
+            # Identity orientation
+            roi_msg.pose.orientation.w = 1.0
+            roi_msg.pose.orientation.x = 0.0
+            roi_msg.pose.orientation.y = 0.0
+            roi_msg.pose.orientation.z = 0.0
+
+            self.pub_target_roi.publish(roi_msg)
+
+    def publish_target_list(self, timestamp):
+        """
+        Publish the current list of detected targets
+        """
+        if len(self.detected_targets) == 0:
+            target_list_msg = String()
+            target_list_msg.data = "No targets detected"
+            self.pub_target_list.publish(target_list_msg)
+            return
+        
+        # Create target list string
+        target_info = []
+        for target in self.detected_targets:
+            target_info.append("ID:{} Type:{} Pos:[{:.2f},{:.2f},{:.2f}] Conf:{:.2f}".format(
+                target.target_id, target.label, 
+                target.world_x, target.world_y, target.world_z,
+                target.confidence
+            ))
+        
+        target_list_msg = String()
+        target_list_msg.data = "Targets: " + " | ".join(target_info)
+        self.pub_target_list.publish(target_list_msg)
 
     def publish_target_detection(self, detections, timestamp):
         """
@@ -209,9 +390,16 @@ class DepthaiCamera():
             confirmation_msg = Bool()
             confirmation_msg.data = False
             self.pub_target_confirmation.publish(confirmation_msg)
+            self.publish_target_list(timestamp)
             return
-            
-        # For now, take the highest confidence detection
+        
+        # Update target list with new detections
+        self.update_target_list(detections, timestamp)
+        
+        # Publish target list
+        self.publish_target_list(timestamp)
+        
+        # For spar/breadcrumb compatibility, publish the highest confidence detection
         best_detection = max(detections, key=lambda d: d.confidence)
         
         # Calculate detection center in pixels
@@ -225,7 +413,6 @@ class DepthaiCamera():
         max_area = self.nn_shape_w * self.nn_shape_h
         
         # Depth estimation: larger objects are closer
-        # This is a simple heuristic - ideally use stereo depth or other methods
         depth_estimate = max(0.5, 5.0 * (1.0 - bbox_area / max_area))
         
         # Convert to world coordinates
@@ -248,24 +435,11 @@ class DepthaiCamera():
         self.pub_target_type.publish(type_msg)
         
         # Publish target ROI (compatible with spar ROI subscriber)
-        roi_msg = PoseStamped()
-        roi_msg.header.stamp = timestamp
-        roi_msg.header.frame_id = "map"  # World coordinate frame
         
-        roi_msg.pose.position.x = world_x
-        roi_msg.pose.position.y = world_y
-        roi_msg.pose.position.z = world_z
         
-        # Identity orientation
-        roi_msg.pose.orientation.w = 1.0
-        roi_msg.pose.orientation.x = 0.0
-        roi_msg.pose.orientation.y = 0.0
-        roi_msg.pose.orientation.z = 0.0
-        
-        self.pub_target_roi.publish(roi_msg)
-        
-        rospy.loginfo("Target detected: {} at world coords [{:.2f}, {:.2f}, {:.2f}] confidence: {:.2f}".format(
+        rospy.loginfo("Best target: {} at world coords [{:.2f}, {:.2f}, {:.2f}] confidence: {:.2f}".format(
             labels[best_detection.label], world_x, world_y, world_z, best_detection.confidence))
+        rospy.loginfo("Total unique targets tracked: {}".format(len(self.detected_targets)))
 
     def rgb_camera(self):
         cam_rgb = self.pipeline.createColorCamera()
@@ -299,7 +473,7 @@ class DepthaiCamera():
         with dai.Device() as device:
             cams = device.getConnectedCameras()
             #depth_enabled = dai.CameraBoardSocket.LEFT in cams and dai.CameraBoardSocket.RIGHT in cams
-            if cam_source != "rgb" and not depth_enabled:
+            if cam_source != "rgb": # and not depth_enabled:
                 raise RuntimeError("Unable to run the experiment on {} camera! Available cameras: {}".format(cam_source, cams))
             device.startPipeline(pipeline)
 
@@ -348,11 +522,14 @@ class DepthaiCamera():
                     confirmation_msg = Bool()
                     confirmation_msg.data = False
                     self.pub_target_confirmation.publish(confirmation_msg)
+                    # Still publish target list for currently tracked targets
+                    self.publish_target_list(current_time)
                     continue
 
                 if frame is not None:
                     cv2.putText(overlay, "NN fps: {:.2f}".format(fps), (2, overlay.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
                     cv2.putText(overlay, "Found classes {}".format(found_classes), (2, 10), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
+                    cv2.putText(overlay, "Tracked targets: {}".format(len(self.detected_targets)), (2, 25), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
                     self.publish_to_ros(frame)
                     self.publish_detect_to_ros(overlay)
                     self.publish_camera_info()
@@ -444,7 +621,7 @@ class DepthaiCamera():
         elif cam_source == 'right':
             cam = pipeline.create(dai.node.MonoCamera)
             cam.setBoardSocket(dai.CameraBoardSocket.RIGHT)
-            print("Using BW Rigth cam")
+            print("Using BW Right cam")
 
         if cam_source != 'rgb':
             manip = pipeline.create(dai.node.ImageManip)

@@ -33,7 +33,9 @@ class ArucoDetector():
         self.pub_target_roi = rospy.Publisher(self.pub_topic_target_roi, PoseStamped, queue_size=10)
         
         # Subscribe to UAV pose from MAVROS
-        self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
+        # self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
+        # Subscribe to UAV Emulated pose
+        self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
         
         # Subscribe to camera info for intrinsics
         self.sub_camera_info = rospy.Subscriber('/depthai_node/camera/camera_info', CameraInfo, self.callback_camera_info)
@@ -47,9 +49,9 @@ class ArucoDetector():
         self.cx, self.cy = 320.0, 240.0
         
         # Camera offset from UAV center (matching tf2_broadcaster_frames and YOLOv5)
-        self.camera_offset_x = 0.1   # Forward
+        self.camera_offset_x = 0.12   # Forward
         self.camera_offset_y = 0.0   # Right  
-        self.camera_offset_z = -0.15 # Down
+        self.camera_offset_z = -0.1 # Down
         
         # ArUco marker size in meters (adjust based on your actual markers)
         self.marker_size = 0.1  # 10cm markers
