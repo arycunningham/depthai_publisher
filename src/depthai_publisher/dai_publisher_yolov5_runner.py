@@ -138,9 +138,9 @@ class DepthaiCamera():
         self.pub_target_list = rospy.Publisher(self.pub_topic_target_list, String, queue_size=2)
         
         # Subscribe to UAV pose from MAVROS
-        # self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
+        self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
         # Subscribe to UAV Emulated pose
-        self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
+        # self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
         
         # UAV pose storage
         self.current_uav_pose = None
