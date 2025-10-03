@@ -15,3 +15,4 @@ src/depthai_publisher/__pycache__/
 *$py.class
 *.pyc
 *.cpython-38.pyc
+.github
