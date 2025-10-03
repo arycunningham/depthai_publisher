@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 
-'''
-Run as:
-# check model path line ~30is
-rosrun depthai_publisher dai_publisher_yolov5_runner
-'''
-############################### ############################### Libraries ###############################
+################## Import Libraries ##################
 from pathlib import Path
 import threading
 import csv
 import argparse
 import time
 import sys
-import json     # Yolo conf use json files
+import json
 import cv2
 import numpy as np
 import depthai as dai
@@ -20,31 +15,38 @@ import rospy
 from sensor_msgs.msg import CompressedImage, Image, CameraInfo
 from cv_bridge import CvBridge, CvBridgeError
 
-############################### ############################### Parameters ###############################
-# Global variables to deal with pipeline creation
+from std_msgs.msg import Float32MultiArray, String, Bool
+from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
+from mavros_msgs.msg import State
+import tf2_ros
+import tf_conversions
+import math
+from visualization_msgs.msg import Marker, MarkerArray
+
+################## OAK-D Pipeline Parameters ##################
+## Establishing global variables for later pipeline creation
 pipeline = None
-cam_source = 'rgb' #'rgb', 'left', 'right'
-cam=None
-# sync outputs
+cam_source = 'rgb'
+cam = None
+## Synchronize outputs
 syncNN = True
-# model path
+## Specify the CV model to be deployed
 modelsPath = "/home/cdrone/catkin_ws/src/depthai_publisher/src/depthai_publisher/models"
-# modelName = 'exp31Yolov5_ov21.4_6sh'
 modelName = 'v3b'
-# confJson = 'exp31Yolov5.json'
 confJson = 'v3b.json'
 
-################################  Yolo Config File
-# parse config
+################## YOLOv5 Configuration ###################
+
 configPath = Path(f'{modelsPath}/{modelName}/{confJson}')
+
 if not configPath.exists():
-    raise ValueError("Path {} does not exist!".format(configPath))
+	raise ValueError("Path {} does not exist!".format(configPath))
 
 with configPath.open() as f:
-    config = json.load(f)
-nnConfig = config.get("nn_config", {})
+	config = json.load(f)
 
-# Extract metadata
+nnConfig = config.get("nn_config", {})
+## Extract metadata from configuration file
 metadata = nnConfig.get("NN_specific_metadata", {})
 classes = metadata.get("classes", {})
 coordinates = metadata.get("coordinates", {})
@@ -56,10 +58,12 @@ confidenceThreshold = metadata.get("confidence_threshold", {})
 nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", {})
 
+
 class DepthaiCamera():
     # res = [416, 416]
     fps = 30.0
 
+    ## Establishing ROS topics to publish
     pub_topic = '/depthai_node/image/compressed'
     pub_topic_raw = '/depthai_node/image/raw'
     pub_topic_detect = '/depthai_node/detection/compressed'
@@ -68,11 +72,11 @@ class DepthaiCamera():
     def __init__(self):
         self.pipeline = dai.Pipeline()
 
-         # Input image size
+        ## Input image size
         if "input_size" in nnConfig:
             self.nn_shape_w, self.nn_shape_h = tuple(map(int, nnConfig.get("input_size").split('x')))
 
-        # Pulbish ros image data
+        ## Pulbish ROS image data
         self.pub_image = rospy.Publisher(self.pub_topic, CompressedImage, queue_size=10)
         self.pub_image_raw = rospy.Publisher(self.pub_topic_raw, Image, queue_size=10)
         self.pub_image_detect = rospy.Publisher(self.pub_topic_detect, CompressedImage, queue_size=10)
@@ -88,8 +92,6 @@ class DepthaiCamera():
         rospy.on_shutdown(lambda: self.shutdown())
 
     def publish_camera_info(self, timer=None):
-        # Create a publisher for the CameraInfo topic
-
         # Create a CameraInfo message
         camera_info_msg = CameraInfo()
         camera_info_msg.header.frame_id = "camera_frame"
