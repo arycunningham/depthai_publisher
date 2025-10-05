@@ -58,6 +58,11 @@ confidenceThreshold = metadata.get("confidence_threshold", {})
 nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", {})
 
+## Create a class to store target detections
+
+class DetectedTarget():
+    def __init__(self, target_id, )
+
 
 class DepthaiCamera():
     # res = [416, 416]
@@ -68,6 +73,12 @@ class DepthaiCamera():
     pub_topic_raw = '/depthai_node/image/raw'
     pub_topic_detect = '/depthai_node/detection/compressed'
     pub_topic_cam_inf = '/depthai_node/camera/camera_info'
+
+    ## Target Detection Integration with Auto Navigation
+    pub_topic_target_confirmation = '/target_detection/confirmation'
+    pub_topic_target_type = '/target_detection/type'
+    pub_topic_target_roi = '/target_detection/roi'
+    pub_topic_target_list = '/target_detection/target_list'
 
     def __init__(self):
         self.pipeline = dai.Pipeline()
@@ -82,14 +93,48 @@ class DepthaiCamera():
         self.pub_image_detect = rospy.Publisher(self.pub_topic_detect, CompressedImage, queue_size=10)
         # Create a publisher for the CameraInfo topic
         self.pub_cam_inf = rospy.Publisher(self.pub_topic_cam_inf, CameraInfo, queue_size=10)
+
+        # Publishers for target detection (compatible with spar/breadcrumb system)
+        self.pub_target_confirmation = rospy.Publisher(self.pub_topic_target_confirmation, Bool, queue_size=2)
+        self.pub_target_type = rospy.Publisher(self.pub_topic_target_type, String, queue_size=2)
+        self.pub_target_roi = rospy.Publisher(self.pub_topic_target_roi, PoseStamped, queue_size=2)
+        self.pub_target_list = rospy.Publisher(self.pub_topic_target_list, String, queue_size=2)
+        
+        # Subscribe to UAV pose from MAVROS
+        self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
+        # Subscribe to UAV Emulated pose
+        # self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
+
+        # Target management
+        self.detected_targets = []  # List of DetectedTarget objects
+        self.target_id_counter = 0
+
+        # Camera parameters for pose transformation
+        # Camera offset from UAV center (matching tf2_broadcaster_frames)
+        self.camera_offset_x = 0.12   # Forward
+        self.camera_offset_y = 0.0   # Right
+        self.camera_offset_z = -0.1 # Down
+
+        # Camera intrinsics - predefining comes in handy for the math
+        self.fx, self.fy = 615.381, 615.381
+        self.cx, self.cy = 320.0, 240.0
+        
+        # UAV pose storage
+        self.current_uav_pose = None
         # Create a timer for the callback
         self.timer = rospy.Timer(rospy.Duration(1.0 / 10), self.publish_camera_info, oneshot=False)
 
         rospy.loginfo("Publishing images to rostopic: {}".format(self.pub_topic))
+        rospy.loginfo("Publishing target detection to: confirmation={}, type={}, roi={}, list={}".format(
+            self.pub_topic_target_confirmation, self.pub_topic_target_type, 
+            self.pub_topic_target_roi, self.pub_topic_target_list))
 
         self.br = CvBridge()
 
         rospy.on_shutdown(lambda: self.shutdown())
+
+    def callback_uav_pose(self, msg)
+        self.current_uav_pose = msg
 
     def publish_camera_info(self, timer=None):
         # Create a CameraInfo message
@@ -99,19 +144,27 @@ class DepthaiCamera():
         camera_info_msg.width = self.nn_shape_w  # Set the width of the camera image
 
         # Set the camera intrinsic matrix (fx, fy, cx, cy)
-        camera_info_msg.K = [615.381, 0.0, 320.0, 0.0, 615.381, 240.0, 0.0, 0.0, 1.0]
+        camera_info_msg.K = [self.fx, 0.0, self.cx, 0.0, self.fy, self.cy, 0.0, 0.0, 1.0]
         # Set the distortion parameters (k1, k2, p1, p2, k3)
         camera_info_msg.D = [-0.10818, 0.12793, 0.00000, 0.00000, -0.04204]
         # Set the rectification matrix (identity matrix)
         camera_info_msg.R = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         # Set the projection matrix (P)
-        camera_info_msg.P = [615.381, 0.0, 320.0, 0.0, 0.0, 615.381, 240.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        camera_info_msg.P = [self.fx, 0.0, self.cx, 0.0, 0.0, self.fy, self.cy, 0.0, 0.0, 0.0, 1.0, 0.0]
         # Set the distortion model
         camera_info_msg.distortion_model = "plumb_bob"
         # Set the timestamp
         camera_info_msg.header.stamp = rospy.Time.now()
 
         self.pub_cam_inf.publish(camera_info_msg)  # Publish the camera info message
+
+    def pixel_to_world_coordinates(self, pixel_x, pixel_y)
+        ## Convert pixel to normalized camera coordinates
+        x_norm = (pixel_x - self.cx) / self.fx
+        y_norm = (pixel_y - self.cy) / self.fy
+
+        uav_pos = self.current_uav_pose.pose.position
+        uav_orient = self.current_uav_pose.pose.orientation
 
     def rgb_camera(self):
         cam_rgb = self.pipeline.createColorCamera()
@@ -178,14 +231,10 @@ class DepthaiCamera():
                 
                 if inDet is not None:
                     detections = inDet.detections
-                    # print(detections)
                     for detection in detections:
-                        # print(detection)
-                        # print("{},{},{},{},{},{},{}".format(detection.label,labels[detection.label],detection.confidence,detection.xmin, detection.ymin, detection.xmax, detection.ymax))
+                        rospy.loginfo("{},{},{},{},{},{}".format(labels[detection.label],detection.confidence,detection.xmin, detection.ymin, detection.xmax, detection.ymax))
                         found_classes.append(detection.label)
-                        # print(dai.ImgDetection.getData(detection))
                     found_classes = np.unique(found_classes)
-                    # print(found_classes)
                     overlay = self.show_yolo(frame, detections)
                 else:
                     print("Detection empty, trying again...")
@@ -194,7 +243,6 @@ class DepthaiCamera():
                 if frame is not None:
                     cv2.putText(overlay, "NN fps: {:.2f}".format(fps), (2, overlay.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
                     cv2.putText(overlay, "Found classes {}".format(found_classes), (2, 10), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 0, 0))
-                    # cv2.imshow("nn_output_yolo", overlay)
                     self.publish_to_ros(frame)
                     self.publish_detect_to_ros(overlay)
                     self.publish_camera_info()
@@ -203,19 +251,8 @@ class DepthaiCamera():
                 counter+=1
                 if (time.time() - start_time) > 1 :
                     fps = counter / (time.time() - start_time)
-
                     counter = 0
                     start_time = time.time()
-
-
-            # with dai.Device(self.pipeline) as device:
-            #     video = device.getOutputQueue(name="video", maxSize=1, blocking=False)
-
-            #     while True:
-            #         frame = video.get().getCvFrame()
-
-            #         self.publish_to_ros(frame)
-            #         self.publish_camera_info()
 
     def publish_to_ros(self, frame):
         msg_out = CompressedImage()
@@ -302,7 +339,6 @@ class DepthaiCamera():
             manip = pipeline.create(dai.node.ImageManip)
             manip.setResize(self.nn_shape_w,self.nn_shape_h)
             manip.setKeepAspectRatio(True)
-            # manip.setFrameType(dai.RawImgFrame.Type.BGR888p)
             manip.setFrameType(dai.RawImgFrame.Type.RGB888p)
             cam.out.link(manip.inputImage)
             manip.out.link(detection_nn.input)
