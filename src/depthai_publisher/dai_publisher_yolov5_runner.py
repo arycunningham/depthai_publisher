@@ -38,9 +38,9 @@ syncNN = True
 # model path
 modelsPath = "/home/cdrone/catkin_ws/src/depthai_publisher/src/depthai_publisher/models"
 # modelName = 'exp31Yolov5_ov21.4_6sh'
-modelName = 'v3b'
+modelName = 'f1'
 # confJson = 'exp31Yolov5.json'
-confJson = 'v3b.json'
+confJson = 'f1.json'
 
 ################################  Yolo Config File
 # parse config
@@ -59,7 +59,8 @@ coordinates = metadata.get("coordinates", {})
 anchors = metadata.get("anchors", {})
 anchorMasks = metadata.get("anchor_masks", {})
 iouThreshold = metadata.get("iou_threshold", {})
-confidenceThreshold = metadata.get("confidence_threshold", {})
+# confidenceThreshold = metadata.get("confidence_threshold", {})
+confidenceThreshold = 0.75
 # Parse labels
 nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", {})
@@ -138,9 +139,9 @@ class DepthaiCamera():
         self.pub_target_list = rospy.Publisher(self.pub_topic_target_list, String, queue_size=2)
         
         # Subscribe to UAV pose from MAVROS
-        self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
+        # self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
         # Subscribe to UAV Emulated pose
-        # self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
+        self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
         
         # UAV pose storage
         self.current_uav_pose = None
