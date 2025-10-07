@@ -16,13 +16,13 @@ class ArucoDetector():
 
     frame_sub_topic = '/depthai_node/image/compressed'
     raw_sub_topic = '/depthai_node/image/raw'
-    marker_num_topic = '/target_detection/marker_num'
+    marker_num_topic = '/target_detection/marker_id'
 
     def __init__(self):
         self.aruco_pub = rospy.Publisher(
             '/processed_aruco/image/compressed', CompressedImage, queue_size=10)
         self.aruco_pub_raw = rospy.Publisher('processed_aruco/image/raw', Image, queue_size=10)
-        self.marker_num_pub = rospy.Publisher('/target_detection/marker_num', String, queue_size=10)
+        self.marker_num_pub = rospy.Publisher('/target_detection/marker_id', String, queue_size=10)
         self.br = CvBridge()
 
         if not rospy.is_shutdown():

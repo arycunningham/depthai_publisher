@@ -137,6 +137,10 @@ class DepthaiCamera():
         self.pub_target_type = rospy.Publisher(self.pub_topic_target_type, String, queue_size=2)
         self.pub_target_roi = rospy.Publisher(self.pub_topic_target_roi, PoseStamped, queue_size=2)
         self.pub_target_list = rospy.Publisher(self.pub_topic_target_list, String, queue_size=2)
+
+        ## Subscribe to ArUco marker ID
+        self.sub_marker_id = rospy.Subscriber('/target_detection/marker_id', String, self.aruco_callback)
+        self.marker_id = None
         
         # Subscribe to UAV pose from MAVROS
         # self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
@@ -177,6 +181,10 @@ class DepthaiCamera():
     def callback_uav_pose(self, msg):
         """Store current UAV pose for target localization"""
         self.current_uav_pose = msg
+
+    def aruco_callback(self, msg):
+
+        self.marker_id = msg
 
     def publish_camera_info(self, timer=None):
         # Create a CameraInfo message
@@ -433,14 +441,30 @@ class DepthaiCamera():
         # Publish target type
         type_msg = String()
         type_msg.data = labels[best_detection.label]
-        self.pub_target_type.publish(type_msg)
+        if type_msg.data == "marker" and (self.marker_id is not None):
+            type_msg = "marker {}".format(str(self.marker_id))
+            self.pub_target_type.publish(type_msg)
+        elif type_msg.data == "marker" and (self.marker_id is None):
+            rospy.logwarn("Marker detected but no ArUco ID received")
+        else:
+            self.pub_target_type.publish(type_msg)
         
+        #         type_msg = String()
+        # type_msg.data = labels[best_detection.label]
+        # if type_msg.data == "marker":
+        #     type_msg.data = type_msg.data + str(self.marker_id)
+        #     self.pub_target_type.publish(type_msg)
+        # else:
+        #     self.pub_target_type.publish(type_msg)
+
         # Publish target ROI (compatible with spar ROI subscriber)
         
         
         rospy.loginfo("Best target: {} at world coords [{:.2f}, {:.2f}, {:.2f}] confidence: {:.2f}".format(
             labels[best_detection.label], world_x, world_y, world_z, best_detection.confidence))
         rospy.loginfo("Total unique targets tracked: {}".format(len(self.detected_targets)))
+
+        return marker_id
 
     def rgb_camera(self):
         cam_rgb = self.pipeline.createColorCamera()
