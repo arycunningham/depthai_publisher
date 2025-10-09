@@ -442,7 +442,7 @@ class DepthaiCamera():
         type_msg = String()
         type_msg.data = labels[best_detection.label]
         if type_msg.data == "marker" and (self.marker_id is not None):
-            type_msg.data = "marker {}".format(str(self.marker_id))
+            type_msg = "marker {}".format(str(self.marker_id))
             self.pub_target_type.publish(type_msg)
         elif type_msg.data == "marker" and (self.marker_id is None):
             rospy.logwarn("Marker detected but no ArUco ID received")

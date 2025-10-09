@@ -20,9 +20,9 @@ class ArucoDetector():
 
     def __init__(self):
         self.aruco_pub = rospy.Publisher(
-            '/processed_aruco/image/compressed', CompressedImage, queue_size=10)
-        self.aruco_pub_raw = rospy.Publisher('processed_aruco/image/raw', Image, queue_size=10)
-        self.marker_num_pub = rospy.Publisher('/target_detection/marker_id', String, queue_size=10)
+            '/processed_aruco/image/compressed', CompressedImage, queue_size=2)
+        self.aruco_pub_raw = rospy.Publisher('processed_aruco/image/raw', Image, queue_size=2)
+        self.marker_num_pub = rospy.Publisher('/target_detection/marker_id', String, queue_size=2)
         self.br = CvBridge()
 
         if not rospy.is_shutdown():
