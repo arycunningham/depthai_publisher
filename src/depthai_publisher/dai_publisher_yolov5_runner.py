@@ -442,7 +442,7 @@ class DepthaiCamera():
         type_msg = String()
         type_msg.data = labels[best_detection.label]
         if type_msg.data == "marker" and (self.marker_id is not None):
-            type_msg = "marker {}".format(str(self.marker_id))
+            type_msg.data = "marker {}".format(str(self.marker_id))
             self.pub_target_type.publish(type_msg)
         elif type_msg.data == "marker" and (self.marker_id is None):
             rospy.logwarn("Marker detected but no ArUco ID received")
@@ -464,7 +464,7 @@ class DepthaiCamera():
             labels[best_detection.label], world_x, world_y, world_z, best_detection.confidence))
         rospy.loginfo("Total unique targets tracked: {}".format(len(self.detected_targets)))
 
-        return marker_id
+        return self.marker_id
 
     def rgb_camera(self):
         cam_rgb = self.pipeline.createColorCamera()
