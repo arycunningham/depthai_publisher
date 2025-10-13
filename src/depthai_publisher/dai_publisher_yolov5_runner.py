@@ -48,6 +48,7 @@ coordinates = metadata.get("coordinates", {})
 anchors = metadata.get("anchors", {})
 anchorMasks = metadata.get("anchor_masks", {})
 iouThreshold = metadata.get("iou_threshold", {})
+# confidenceThreshold = metadata.get("confidence_threshold", {})
 confidenceThreshold = 0.75
 nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", [])
