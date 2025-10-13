@@ -55,7 +55,7 @@ labels = nnMappings.get("labels", [])
 
 class DetectedTarget:
     """Store detected target information"""
-    def __init__(self, target_id, label, confidence, world_x, world_y, world_z, timestamp):
+    def __init__(self, target_id, label, confidence, world_x, world_y, world_z, timestamp, marker_id_str=None):
         self.target_id = target_id
         self.label = label
         self.confidence = confidence
@@ -64,6 +64,7 @@ class DetectedTarget:
         self.world_z = world_z
         self.timestamp = timestamp
         self.last_seen = timestamp
+        self.marker_id_str = marker_id_str  # Store the full marker ID string for RViz
 
     def distance_to(self, other_target):
         dx = self.world_x - other_target.world_x
@@ -121,11 +122,18 @@ class DepthaiCamera():
         self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
         self.current_uav_pose = None
 
+        # ROI diversion status from guidance
+        self.sub_performing_roi = rospy.Subscriber('/guidance/performing_roi', Bool, self.callback_performing_roi)
+        self.guidance_performing_roi = False
+
         # Tracking
         self.detected_targets = []
-        self.detected_gating_set = set()  # (label, marker_id) gating
+        self.detected_gating_set = set()  # (label, marker_id) gating for markers only
         self.target_id_counter = 0
         self.target_timeout = 10.0  # seconds
+        self.type_instance_counters = {}  # Track instance numbers per type (e.g., {'fire': 1, 'smoke': 2})
+        self.min_detection_interval = 2.5  # Minimum seconds between detections
+        self.min_spatial_distance = 0.15  # Minimum meters between targets to avoid duplicates
 
         # Camera extrinsics (relative to UAV base)
         self.camera_offset_x = 0.12
@@ -151,6 +159,14 @@ class DepthaiCamera():
     def callback_uav_pose(self, msg):
         """Store current UAV pose for world coordinate transforms."""
         self.current_uav_pose = msg
+
+    def callback_performing_roi(self, msg):
+        """Store whether guidance is currently performing an ROI diversion."""
+        self.guidance_performing_roi = msg.data
+        if self.guidance_performing_roi:
+            rospy.loginfo("Guidance is performing ROI diversion - detection gating active")
+        else:
+            rospy.loginfo("Guidance resumed normal flight - detection gating released")
 
     def aruco_callback(self, msg):
         """Store detected ArUco marker ID for labeling."""
@@ -233,14 +249,26 @@ class DepthaiCamera():
         for detection in new_detections:
             # Gate by (label, marker_id) to reduce duplicates
             label_str = labels[detection.label] if detection.label < len(labels) else str(detection.label)
-            gate_key = (label_str, self.marker_id if self.marker_id is not None else "none")
             
-            if gate_key in self.detected_gating_set:
-                rospy.loginfo(f"[GATE] Duplicate ignored: {gate_key}")
-                continue
+            # For marker detections, wait for valid marker ID and use strict gating
+            if label_str == "marker":
+                if self.marker_id is None or self.marker_id == "":
+                    rospy.logwarn("[GATE] Marker detected but no ArUco ID available yet, skipping...")
+                    continue
+                gate_key = (label_str, self.marker_id)
+                marker_id_str = "marker_{}".format(self.marker_id)
+                
+                # Strict gating for markers - only allow one per ArUco ID
+                if gate_key in self.detected_gating_set:
+                    rospy.loginfo(f"[GATE] Duplicate marker ignored: {gate_key}")
+                    continue
+                
+                self.detected_gating_set.add(gate_key)
+            else:
+                # For smoke/fire, allow multiple instances but use spatial + temporal gating
+                marker_id_str = None
             
-            self.detected_gating_set.add(gate_key)
-            rospy.loginfo(f"[GATE] New accepted: {gate_key}")
+            rospy.loginfo(f"[GATE] Processing: {label_str}")
 
             # Calculate bounding box center and area for depth estimation
             center_x = (detection.xmin + detection.xmax) / 2.0 * self.nn_shape_w
@@ -259,16 +287,64 @@ class DepthaiCamera():
             
             world_x, world_y, world_z = world_coords
 
+            # Spatial and temporal gating for non-marker targets (smoke, fire, etc.)
+            if label_str != "marker":
+                should_skip = False
+                
+                # Block all new detections if guidance is performing an ROI diversion
+                if self.guidance_performing_roi:
+                    rospy.loginfo(f"[GATE] {label_str} blocked - guidance is performing ROI diversion")
+                    continue
+                
+                for existing_target in self.detected_targets:
+                    # Only check against same type
+                    if existing_target.label != label_str:
+                        continue
+                    
+                    # Calculate spatial distance (2D for ground-level targets)
+                    dx = world_x - existing_target.world_x
+                    dy = world_y - existing_target.world_y
+                    spatial_distance = math.sqrt(dx*dx + dy*dy)
+                    
+                    # Calculate time since this target was first detected
+                    time_since_detection = current_time_sec - existing_target.timestamp.to_sec()
+                    
+                    # Gate if too close spatially OR too recent temporally
+                    if spatial_distance < self.min_spatial_distance:
+                        rospy.loginfo(f"[GATE] {label_str} too close to existing target ({spatial_distance:.2f}m < {self.min_spatial_distance}m), skipping")
+                        should_skip = True
+                        break
+                    
+                    if time_since_detection < self.min_detection_interval:
+                        rospy.loginfo(f"[GATE] {label_str} detected too soon after previous ({time_since_detection:.2f}s < {self.min_detection_interval}s), skipping")
+                        should_skip = True
+                        break
+                
+                if should_skip:
+                    continue
+
+            # Generate unique target ID string based on type
+            if marker_id_str is not None:
+                # For markers, use "marker_#"
+                target_id_str = marker_id_str
+            else:
+                # For other types, use type with instance number
+                if label_str not in self.type_instance_counters:
+                    self.type_instance_counters[label_str] = 0
+                self.type_instance_counters[label_str] += 1
+                instance_num = self.type_instance_counters[label_str]
+                target_id_str = "{}_{}".format(label_str, instance_num)
+
             # Create and store new target
             new_target = DetectedTarget(
                 self.target_id_counter, label_str, detection.confidence,
-                world_x, world_y, world_z, timestamp
+                world_x, world_y, world_z, timestamp, marker_id_str=target_id_str
             )
             self.detected_targets.append(new_target)
             self.target_id_counter += 1
 
-            rospy.loginfo("New target ID={} {} @ [{:.2f}, {:.2f}, {:.2f}] conf:{:.2f}".format(
-                new_target.target_id, new_target.label, world_x, world_y, world_z, detection.confidence))
+            rospy.loginfo("New target ID={} ({}) {} @ [{:.2f}, {:.2f}, {:.2f}] conf:{:.2f}".format(
+                new_target.target_id, target_id_str, new_target.label, world_x, world_y, world_z, detection.confidence))
 
             # Publish individual ROI for this target
             self._publish_single_roi(world_x, world_y, world_z, timestamp)
@@ -285,8 +361,8 @@ class DepthaiCamera():
 
         items = []
         for t in self.detected_targets:
-            items.append("ID:{} Type:{} Pos:[{:.2f},{:.2f},{:.2f}] Conf:{:.2f}".format(
-                t.target_id, t.label, t.world_x, t.world_y, t.world_z, t.confidence))
+            items.append("ID:{} ({}) Type:{} Pos:[{:.2f},{:.2f},{:.2f}] Conf:{:.2f}".format(
+                t.target_id, t.marker_id_str, t.label, t.world_x, t.world_y, t.world_z, t.confidence))
         self.pub_target_list.publish(String(data="Targets: " + " | ".join(items)))
 
     def _publish_single_roi(self, world_x, world_y, world_z, timestamp):
@@ -372,23 +448,28 @@ class DepthaiCamera():
         """
         Publish a full MarkerArray of all currently tracked targets.
         Consolidates all marker creation and publishing in one place.
+        Uses hash of marker_id_str for unique integer IDs.
         """
         arr = MarkerArray()
         for t in targets:
+            # Use hash of the marker_id_str for a consistent integer ID
+            marker_int_id = hash(t.marker_id_str) % (2**31)  # Keep within int32 range
+            text_marker_int_id = (hash(t.marker_id_str + "_text") % (2**31))  # Different ID for text
+            
             # Create cube marker
             cube = self._create_marker(
                 t.world_x, t.world_y, t.world_z,
-                marker_id=t.target_id,
+                marker_id=marker_int_id,
                 marker_ns="detected_targets",
                 marker_type=Marker.CUBE,
                 r=0.1, g=0.6, b=0.2, a=0.9, scale=0.35
             )
             
             # Create text label marker
-            label_text = "ID:{} {} ({:.2f})".format(t.target_id, t.label, t.confidence)
+            label_text = "{} ({:.2f})".format(t.marker_id_str, t.confidence)
             text = self._create_marker(
                 t.world_x, t.world_y, t.world_z,
-                marker_id=t.target_id + 100000,  # Offset ID to avoid collision
+                marker_id=text_marker_int_id,
                 marker_ns="detected_targets_text",
                 marker_type=Marker.TEXT_VIEW_FACING,
                 text=label_text,
