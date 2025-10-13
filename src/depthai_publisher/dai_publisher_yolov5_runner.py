@@ -155,7 +155,7 @@ class DepthaiCamera():
         rospy.loginfo("Target detection topics: confirmation={}, type={}, roi={}, list={}".format(
             self.pub_topic_target_confirmation, self.pub_topic_target_type,
             self.pub_topic_target_roi, self.pub_topic_target_list))
-        rospy.loginfo("Marker topics: marker={}, array={}".format(self.pub_topic_marker, self.pub_topic_marker_array))
+        rospy.loginfo("Marker topics: array={}".format(self.pub_topic_marker_array))
 
         ## CvBridge to convert the camera footage (OpenCV) to ROS image messages
         self.br = CvBridge()
