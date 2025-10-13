@@ -135,15 +135,11 @@ class DepthaiCamera():
         self.fx, self.fy = 615.381, 615.381
         self.cx, self.cy = 320.0, 240.0
 
-        # Publish CameraInfo periodically (and we also send on new frames)
+        # Publish CameraInfo periodically
         self.timer = rospy.Timer(rospy.Duration(0.1), self.publish_camera_info, oneshot=False)
 
-        # Marker array snapshot
-        self.marker_array = MarkerArray()
-        self.marker_seq = 0  # Unique marker ID source
-
         rospy.loginfo("Publishing images to: {}".format(self.pub_topic))
-        rospy.loginfo("Target topics: confirmation={}, type={}, roi={}, list={}".format(
+        rospy.loginfo("Target detection topics: confirmation={}, type={}, roi={}, list={}".format(
             self.pub_topic_target_confirmation, self.pub_topic_target_type,
             self.pub_topic_target_roi, self.pub_topic_target_list))
         rospy.loginfo("Marker topics: marker={}, array={}".format(self.pub_topic_marker, self.pub_topic_marker_array))
@@ -152,9 +148,11 @@ class DepthaiCamera():
         rospy.on_shutdown(self.shutdown)
 
     def callback_uav_pose(self, msg):
+        """Store current UAV pose for world coordinate transforms."""
         self.current_uav_pose = msg
 
     def aruco_callback(self, msg):
+        """Store detected ArUco marker ID for labeling."""
         self.marker_id = msg.data
 
     def publish_camera_info(self, _timer_event=None):
@@ -225,7 +223,7 @@ class DepthaiCamera():
         """Refresh tracked targets with gating to avoid duplicate spam."""
         current_time_sec = timestamp.to_sec()
 
-        # Remove stale
+        # Remove stale targets
         self.detected_targets = [
             t for t in self.detected_targets
             if (current_time_sec - t.last_seen.to_sec()) < self.target_timeout
@@ -233,15 +231,17 @@ class DepthaiCamera():
 
         for detection in new_detections:
             # Gate by (label, marker_id) to reduce duplicates
-            gate_key = (labels[detection.label] if detection.label < len(labels) else str(detection.label),
-                        self.marker_id if self.marker_id is not None else "none")
+            label_str = labels[detection.label] if detection.label < len(labels) else str(detection.label)
+            gate_key = (label_str, self.marker_id if self.marker_id is not None else "none")
+            
             if gate_key in self.detected_gating_set:
                 rospy.loginfo(f"[GATE] Duplicate ignored: {gate_key}")
                 continue
+            
             self.detected_gating_set.add(gate_key)
             rospy.loginfo(f"[GATE] New accepted: {gate_key}")
 
-            # Center & area
+            # Calculate bounding box center and area for depth estimation
             center_x = (detection.xmin + detection.xmax) / 2.0 * self.nn_shape_w
             center_y = (detection.ymin + detection.ymax) / 2.0 * self.nn_shape_h
             bbox_w = (detection.xmax - detection.xmin) * self.nn_shape_w
@@ -255,12 +255,10 @@ class DepthaiCamera():
             world_coords = self.pixel_to_world_coordinates(center_x, center_y, depth_estimate)
             if world_coords is None:
                 continue
+            
             world_x, world_y, world_z = world_coords
-            if world_z < 0:
-                rospy.loginfo("Detection skipped: below ground")
-                continue
 
-            label_str = labels[detection.label] if detection.label < len(labels) else str(detection.label)
+            # Create and store new target
             new_target = DetectedTarget(
                 self.target_id_counter, label_str, detection.confidence,
                 world_x, world_y, world_z, timestamp
@@ -271,26 +269,14 @@ class DepthaiCamera():
             rospy.loginfo("New target ID={} {} @ [{:.2f}, {:.2f}, {:.2f}] conf:{:.2f}".format(
                 new_target.target_id, new_target.label, world_x, world_y, world_z, detection.confidence))
 
-            # Publish per-target ROI immediately
-            roi_msg = PoseStamped()
-            roi_msg.header.stamp = timestamp
-            roi_msg.header.frame_id = "map"
-            roi_msg.pose.position.x = world_x
-            roi_msg.pose.position.y = world_y
-            roi_msg.pose.position.z = world_z
-            roi_msg.pose.orientation.w = 1.0
-            self.pub_target_roi.publish(roi_msg)
+            # Publish individual ROI for this target
+            self._publish_single_roi(world_x, world_y, world_z, timestamp)
 
-            # Also publish a marker for this target (dynamic; latch keeps the last one if stream pauses)
-            self.publish_marker(world_x, world_y, world_z,
-                                marker_id=self.marker_id,
-                                label=new_target.label,
-                                target_id=new_target.target_id)
-
-        # After processing, refresh a full MarkerArray snapshot of all tracked targets
+        # After processing all detections, publish consolidated marker array
         self.publish_marker_array_snapshot(self.detected_targets)
 
     def publish_target_list(self, timestamp):
+        """Publish human-readable string of all tracked targets."""
         if len(self.detected_targets) == 0:
             msg = String(data="No targets detected")
             self.pub_target_list.publish(msg)
@@ -302,44 +288,8 @@ class DepthaiCamera():
                 t.target_id, t.label, t.world_x, t.world_y, t.world_z, t.confidence))
         self.pub_target_list.publish(String(data="Targets: " + " | ".join(items)))
 
-    def publish_target_detection(self, detections, timestamp):
-        if len(detections) == 0:
-            self.pub_target_confirmation.publish(Bool(data=False))
-            self.publish_target_list(timestamp)
-            return
-
-        # Update internal list (& per-target ROI + markers)
-        self.update_target_list(detections, timestamp)
-        self.publish_target_list(timestamp)
-
-        # Best detection details for quick consumers
-        best = max(detections, key=lambda d: d.confidence)
-
-        cx = (best.xmin + best.xmax) / 2.0 * self.nn_shape_w
-        cy = (best.ymin + best.ymax) / 2.0 * self.nn_shape_h
-        bw = (best.xmax - best.xmin) * self.nn_shape_w
-        bh = (best.ymax - best.ymin) * self.nn_shape_h
-        area = bw * bh
-        max_area = self.nn_shape_w * self.nn_shape_h
-        depth_estimate = max(0.5, 5.0 * (1.0 - area / max_area))
-
-        world_coords = self.pixel_to_world_coordinates(cx, cy, depth_estimate)
-        if world_coords is None:
-            rospy.logwarn("Cannot localize target - UAV pose unavailable")
-            return
-
-        world_x, world_y, world_z = world_coords
-
-        self.pub_target_confirmation.publish(Bool(data=True))
-
-        label_str = labels[best.label] if best.label < len(labels) else str(best.label)
-        typemsg = String()
-        if label_str == "marker" and (self.marker_id is not None):
-            typemsg.data = "marker_{}".format(str(self.marker_id))
-        else:
-            typemsg.data = label_str
-        self.pub_target_type.publish(typemsg)
-
+    def _publish_single_roi(self, world_x, world_y, world_z, timestamp):
+        """Helper to publish a single ROI pose."""
         roi_msg = PoseStamped()
         roi_msg.header.stamp = timestamp
         roi_msg.header.frame_id = "map"
@@ -349,108 +299,104 @@ class DepthaiCamera():
         roi_msg.pose.orientation.w = 1.0
         self.pub_target_roi.publish(roi_msg)
 
-        # Quick marker for the best detection too
-        self.publish_marker(world_x, world_y, world_z, marker_id=self.marker_id,
-                            label=typemsg.data, target_id=None)
+    def publish_target_detection(self, detections, timestamp):
+        """Main detection handler - updates tracking, publishes confirmation and best target info."""
+        if len(detections) == 0:
+            self.pub_target_confirmation.publish(Bool(data=False))
+            self.publish_target_list(timestamp)
+            return
 
-        rospy.loginfo("Best target: {} @ [{:.2f}, {:.2f}, {:.2f}] conf:{:.2f}".format(
-            typemsg.data, world_x, world_y, world_z, best.confidence))
+        # Update internal list with gating (also publishes ROIs and marker array)
+        self.update_target_list(detections, timestamp)
+        self.publish_target_list(timestamp)
+
+        # Publish confirmation of detection
+        self.pub_target_confirmation.publish(Bool(data=True))
+
+        # Find best detection and publish its type
+        best = max(detections, key=lambda d: d.confidence)
+        label_str = labels[best.label] if best.label < len(labels) else str(best.label)
+        
+        type_msg = String()
+        if label_str == "marker" and (self.marker_id is not None):
+            type_msg.data = "marker_{}".format(str(self.marker_id))
+        else:
+            type_msg.data = label_str
+        self.pub_target_type.publish(type_msg)
+
+        rospy.loginfo("Best target: {} conf:{:.2f}".format(type_msg.data, best.confidence))
         rospy.loginfo("Total unique targets tracked: {}".format(len(self.detected_targets)))
 
     # -------------------- RViz Marker Publishing --------------------
 
-    def _make_marker(self, x, y, z, marker_id_int, label_text, r=0.0, g=0.2, b=0.8, a=1.0, scale=0.3):
-        """Create a single CUBE marker at (x,y,z) with text label displayed via namespace/id."""
+    def _create_marker(self, x, y, z, marker_id, marker_ns, marker_type, text="", 
+                      r=0.0, g=0.2, b=0.8, a=1.0, scale=0.3):
+        """Unified marker creation - handles both CUBE and TEXT markers."""
         m = Marker()
         m.header.frame_id = "map"
         m.header.stamp = rospy.Time.now()
-        m.ns = "detected_targets"
-        m.id = marker_id_int
-        m.type = Marker.CUBE
+        m.ns = marker_ns
+        m.id = marker_id
+        m.type = marker_type
         m.action = Marker.ADD
-        m.lifetime = rospy.Duration(0)   # infinite
+        m.lifetime = rospy.Duration(0)  # Persistent
         m.frame_locked = True
 
-        # Pose
+        # Position
         m.pose.position.x = x
         m.pose.position.y = y
-        m.pose.position.z = z
-        m.pose.orientation.x = 0.0
-        m.pose.orientation.y = 0.0
-        m.pose.orientation.z = 0.0
+        m.pose.position.z = z if marker_type == Marker.CUBE else z + 0.35  # Offset text above cube
         m.pose.orientation.w = 1.0
 
-        # Scale (meters)
-        m.scale.x = scale
-        m.scale.y = scale
-        m.scale.z = scale * 0.3
-
-        # Color
-        m.color.r = float(r)
-        m.color.g = float(g)
-        m.color.b = float(b)
-        m.color.a = float(a)
+        # Scale and color
+        if marker_type == Marker.CUBE:
+            m.scale.x = scale
+            m.scale.y = scale
+            m.scale.z = scale * 0.3
+            m.color.r = float(r)
+            m.color.g = float(g)
+            m.color.b = float(b)
+            m.color.a = float(a)
+        else:  # TEXT_VIEW_FACING
+            m.scale.z = 0.2
+            m.color.r = 1.0
+            m.color.g = 1.0
+            m.color.b = 1.0
+            m.color.a = float(a)
+            m.text = text
 
         return m
 
-    def _make_text_marker(self, x, y, z, marker_id_int, text, a=1.0):
-        """Optional: Add a floating TEXT_VIEW_FACING marker above the cube."""
-        t = Marker()
-        t.header.frame_id = "map"
-        t.header.stamp = rospy.Time.now()
-        t.ns = "detected_targets_text"
-        t.id = marker_id_int
-        t.type = Marker.TEXT_VIEW_FACING
-        t.action = Marker.ADD
-        t.lifetime = rospy.Duration(0)
-        t.frame_locked = True
-
-        t.pose.position.x = x
-        t.pose.position.y = y
-        t.pose.position.z = z + 0.35
-        t.pose.orientation.w = 1.0
-
-        t.scale.z = 0.2  # text height (meters)
-        t.color.r = 1.0
-        t.color.g = 1.0
-        t.color.b = 1.0
-        t.color.a = a
-        t.text = text
-        return t
-
-    def publish_marker(self, world_x, world_y, world_z, marker_id, label, target_id=None,
-                       r=0.0, g=0.2, b=0.8, a=1.0):
-        """
-        Publish a single marker (CUBE) and a label (TEXT) at the detected position.
-        Uses latch=True so RViz holds last marker when stream pauses.
-        """
-        # Make a stable-ish integer id: prefer target_id if provided, else rolling seq
-        if target_id is not None:
-            marker_id_int = int(target_id)
-        else:
-            self.marker_seq += 1
-            marker_id_int = self.marker_seq
-
-        m = self._make_marker(world_x, world_y, world_z, marker_id_int, label, r, g, b, a)
-        t = self._make_text_marker(world_x, world_y, world_z, marker_id_int + 100000,  # offset id space
-                                   text=(f"{label}" + (f" [{marker_id}]" if marker_id else "")))
-
-        self.pub_marker.publish(m)
-        self.pub_marker.publish(t)  # publish text as well (same latched topic is fine)
-
     def publish_marker_array_snapshot(self, targets):
         """
-        Publish a full snapshot of all currently tracked targets as a MarkerArray.
-        Useful for RViz to see the whole set at once. Latched.
+        Publish a full MarkerArray of all currently tracked targets.
+        Consolidates all marker creation and publishing in one place.
         """
         arr = MarkerArray()
         for t in targets:
-            cube = self._make_marker(t.world_x, t.world_y, t.world_z, t.target_id, t.label,
-                                     r=0.1, g=0.6, b=0.2, a=0.9, scale=0.35)
-            text = self._make_text_marker(t.world_x, t.world_y, t.world_z, t.target_id + 200000,
-                                          text=f"ID:{t.target_id} {t.label} ({t.confidence:.2f})")
+            # Create cube marker
+            cube = self._create_marker(
+                t.world_x, t.world_y, t.world_z,
+                marker_id=t.target_id,
+                marker_ns="detected_targets",
+                marker_type=Marker.CUBE,
+                r=0.1, g=0.6, b=0.2, a=0.9, scale=0.35
+            )
+            
+            # Create text label marker
+            label_text = "ID:{} {} ({:.2f})".format(t.target_id, t.label, t.confidence)
+            text = self._create_marker(
+                t.world_x, t.world_y, t.world_z,
+                marker_id=t.target_id + 100000,  # Offset ID to avoid collision
+                marker_ns="detected_targets_text",
+                marker_type=Marker.TEXT_VIEW_FACING,
+                text=label_text,
+                a=1.0
+            )
+            
             arr.markers.append(cube)
             arr.markers.append(text)
+        
         self.pub_marker_array.publish(arr)
 
     # -------------------- OAK-D / DepthAI loop --------------------

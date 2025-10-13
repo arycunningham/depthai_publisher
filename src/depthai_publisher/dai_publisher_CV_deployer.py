@@ -324,6 +324,17 @@ class DepthaiCamera():
             type_msg.data = "marker_{}".format(str(self.marker_id))
         self.pub_target_type.publish(type_msg)
 
+        # Find the corresponding DetectedTarget for best_detection
+        matched_target = None
+        for target in self.detected_targets:
+            if (target.label == labels[best_detection.label] and abs(target.confidence - best_detection.confidence) < 1e-3):
+                matched_target = target
+                break
+        if matched_target:
+            world_x, world_y, world_z = matched_target.world_x, matched_target.world_y, matched_target.world_z
+        else:
+            world_x, world_y, world_z = 0.0, 0.0, 0.0
+
         ## Return the detection information to the command line
         rospy.loginfo("Best target: {} at world coords [{:.2f}, {:.2f}, {:.2f}] confidence: {:.2f}".format(
             labels[best_detection.label], world_x, world_y, world_z, best_detection.confidence))
