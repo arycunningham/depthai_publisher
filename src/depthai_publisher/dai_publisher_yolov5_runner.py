@@ -118,10 +118,10 @@ class DepthaiCamera():
         self.pub_marker_array = rospy.Publisher(self.pub_topic_marker_array, MarkerArray, queue_size=10, latch=True)
 
         ## Subscribe to UAV pose from MAVROS
-        self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
+        # self.sub_uav_pose = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.callback_uav_pose)
 
         ## Subscribe to UAV Emulated pose
-        # self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
+        self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
 
         ## UAV pose storage
         self.current_uav_pose = None
@@ -374,7 +374,7 @@ class DepthaiCamera():
         
         for target in self.detected_targets:
             target_info.append("ID:{} ({}) Type:{} Pos:[{:.2f},{:.2f},{:.2f}] Conf:{:.2f}".format(
-                target.target_id, target.marker_id, target.label,
+                target.target_id, target.marker_id_str, target.label,
                 target.world_x, target.world_y, target.world_z,
                 target.confidence
             ))
@@ -421,6 +421,23 @@ class DepthaiCamera():
 
         # Find best detection and publish its type
         best_detection = max(detections, key=lambda d: d.confidence)
+
+        ## Calculate world coordinates for the best detection for logging
+        center_x = (best_detection.xmin + best_detection.xmax) / 2.0 * self.nn_shape_w
+        center_y = (best_detection.ymin + best_detection.ymax) / 2.0 * self.nn_shape_h
+        
+        bbox_w = (best_detection.xmax - best_detection.xmin) * self.nn_shape_w
+        bbox_h = (best_detection.ymax - best_detection.ymin) * self.nn_shape_h
+        bbox_area = bbox_w * bbox_h
+        max_area = self.nn_shape_w * self.nn_shape_h
+        
+        depth_estimate = max(0.5, 5.0 * (1.0 - bbox_area / max_area))
+        world_coords = self.pixel_to_world_coordinates(center_x, center_y, depth_estimate)
+        
+        if world_coords is not None:
+            world_x, world_y, world_z = world_coords
+        else:
+            world_x, world_y, world_z = 0.0, 0.0, 0.0
 
         ## If the detection is a marker, append the marker ID to the detection type
         type_msg = String()
@@ -524,7 +541,7 @@ class DepthaiCamera():
         with dai.Device() as device:
             cams = device.getConnectedCameras()
             if cam_source != "rgb":
-                raise RuntimeError(f"Unable to run the experiment on {cam_source} camera! Available cameras: {cams}")
+                raise RuntimeError("This script currently requires the rgb camera. Connected: {}".format(cams))
             device.startPipeline(pipeline)
 
             q_nn_input = device.getOutputQueue(name="nn_input", maxSize=4, blocking=False)
@@ -536,25 +553,30 @@ class DepthaiCamera():
             counter = 0
             fps = 0.0
 
-            while True:
+            while not rospy.is_shutdown():
                 found_classes = []
                 inRgb = q_nn_input.get()
                 inDet = q_nn.get()
 
-                if inRgb is None:
-                    rospy.logwarn("Cam Image empty, skipping frame.")
+                if inRgb is not None:
+                    frame = inRgb.getCvFrame()
+                else:
+                    rospy.logwarn("Empty camera frame; continuing...")
                     continue
-                frame = inRgb.getCvFrame()
 
                 current_time = rospy.Time.now()
 
                 if inDet is not None:
                     detections = inDet.detections
-                    for detection in detections:
-                        rospy.loginfo("{},{},{},{},{},{}".format(labels[detection.label],detection.confidence,detection.xmin, detection.ymin, detection.xmax, detection.ymax))
-                        found_classes.append(detection.label)
+                    for d in detections:
+                        label_str = labels[d.label] if d.label < len(labels) else str(d.label)
+                        rospy.loginfo("{},{},{},{},{},{}".format(
+                            label_str, d.confidence, d.xmin, d.ymin, d.xmax, d.ymax))
+                        found_classes.append(label_str)
                     found_classes = np.unique(found_classes)
                     overlay = self.show_yolo(frame, detections)
+
+                    # Publish detections to SPaR/Breadcrumb-compatible topics; this also publishes markers
                     self.publish_target_detection(detections, current_time)
 
                 else:
@@ -573,7 +595,7 @@ class DepthaiCamera():
 
                     self.publish_to_ros(frame)
                     self.publish_detect_to_ros(overlay)
-                    ## Refresh camera info stamp
+                    # Also refresh camera info stamp
                     self.publish_camera_info()
 
                 counter += 1
@@ -581,6 +603,7 @@ class DepthaiCamera():
                     fps = counter / (time.time() - start_time)
                     counter = 0
                     start_time = time.time()
+
 
     def publish_to_ros(self, frame):
         # Compressed
