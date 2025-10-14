@@ -48,7 +48,7 @@ coordinates = metadata.get("coordinates", {})
 anchors = metadata.get("anchors", {})
 anchorMasks = metadata.get("anchor_masks", {})
 iouThreshold = metadata.get("iou_threshold", {})
-confidenceThreshold = 0.75
+confidenceThreshold = 0.8
 nnMappings = config.get("mappings", {})
 labels = nnMappings.get("labels", [])
 
@@ -94,7 +94,7 @@ class DepthaiCamera():
             self.nn_shape_w, self.nn_shape_h = tuple(map(int, nnConfig.get("input_size").split('x')))
         else:
             # Default to a common preview size if missing
-            self.nn_shape_w, self.nn_shape_h = 640, 360
+            self.nn_shape_w, self.nn_shape_h = 416, 416
 
         # Image publishers
         self.pub_image = rospy.Publisher(self.pub_topic, CompressedImage, queue_size=30)
@@ -117,14 +117,15 @@ class DepthaiCamera():
         self.pub_marker_array = rospy.Publisher(self.pub_topic_marker_array, MarkerArray, queue_size=10, latch=True)
 
         # UAV pose in map frame
-        self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
+        # self.sub_uav_pose = rospy.Subscriber('/uavasr/pose', PoseStamped, self.callback_uav_pose)
+        self.sub_pose = rospy.Subscriber("/mavros/local_position/pose", PoseStamped, self.callback_uav_pose)
         self.current_uav_pose = None
 
         # Tracking
         self.detected_targets = []
         self.detected_gating_set = set()  # (label, marker_id) gating
         self.target_id_counter = 0
-        self.target_timeout = 10.0  # seconds
+        self.target_timeout = 2.5  # seconds
 
         # Camera extrinsics (relative to UAV base)
         self.camera_offset_x = 0.12
